@@ -420,3 +420,187 @@ ggplot(pca_df, aes(PC1, PC2)) +
   ) +
 
   theme_bw()
+
+------------------------------------------------------------------------------------
+
+
+# ============================================================
+# PCA outlier calling from prcomp() scores (10 PCs)
+# - Implements "more than 2*SD away from the centroid"
+# - Implements a more scientifically appropriate method:
+#     robust Mahalanobis distance in PC space (MCD) with chi-square cutoff
+# - Visualises both on:
+#     1) PC1 vs PC2 scatter (centroid highlighted)
+#     2) Distance-to-centroid distribution (Euclidean; client + sensible variant)
+#     3) Mahalanobis distance diagnostic (QQ-style) + threshold
+# ============================================================
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Robust covariance for Mahalanobis (recommended)
+# install.packages("rrcov") if needed
+library(rrcov)
+
+# -----------------------------
+# Inputs assumed to exist:
+#   pca  <- prcomp(t(logCPM[var_idx,]), center=TRUE, scale.=TRUE)
+# Optional:
+#   meta data frame with a sample_id column to join (edit names below)
+# -----------------------------
+n_pcs <- 10
+scores <- as.data.frame(pca$x[, 1:n_pcs, drop = FALSE])
+scores$sample <- rownames(scores)
+
+# If you have metadata you want to merge (optional)
+# meta must have sample_id that matches rownames(pca$x)
+# scores <- scores %>% left_join(meta, by = c("sample" = "sample_id"))
+
+# -----------------------------
+# 1) Euclidean distance to centroid in 10D PC space
+# -----------------------------
+pc_cols <- paste0("PC", 1:n_pcs)
+centroid <- colMeans(scores[, pc_cols, drop = FALSE])
+
+scores <- scores %>%
+  mutate(
+    dist_euclid = sqrt(rowSums((as.matrix(across(all_of(pc_cols))) -
+                                 matrix(centroid, nrow = n(), ncol = n_pcs, byrow = TRUE))^2))
+  )
+
+sd_dist  <- sd(scores$dist_euclid)
+mean_dist <- mean(scores$dist_euclid)
+
+# Client interpretation A (literal): distance > 2*SD (from 0)
+# This is uncommon because distances are not mean-zero.
+thr_client_literal <- 2 * sd_dist
+
+# Client interpretation B (more common "2 SD rule"): distance > mean + 2*SD
+thr_client_meanplus <- mean_dist + 2 * sd_dist
+
+scores <- scores %>%
+  mutate(
+    out_client_literal  = dist_euclid > thr_client_literal,
+    out_client_meanplus = dist_euclid > thr_client_meanplus
+  )
+
+# -----------------------------
+# 2) Scientifically preferred: robust Mahalanobis distance in 10D PC space
+#    - Use MCD robust covariance to reduce influence of outliers
+#    - Under multivariate normality, MD^2 ~ Chi-square(df = n_pcs)
+# -----------------------------
+X <- as.matrix(scores[, pc_cols, drop = FALSE])
+
+mcd <- CovMcd(X)  # robust location + covariance
+md2 <- mahalanobis(X, center = mcd@center, cov = mcd@cov)
+
+# Choose a cutoff. Common QC choices:
+#  - 0.975: "more inclusive" (flags more)
+#  - 0.99 : "stricter"
+#  - 0.999: "very strict"
+alpha <- 0.99
+thr_md2 <- qchisq(alpha, df = n_pcs)
+
+scores <- scores %>%
+  mutate(
+    md2 = md2,
+    out_robust_md = md2 > thr_md2
+  )
+
+# -----------------------------
+# 3) Visualisation A: PC1 vs PC2 scatter (centroid shown)
+#    Note: outlier calls are in 10D; points may not look extreme in PC1/PC2.
+# -----------------------------
+centroid_12 <- tibble(PC1 = centroid["PC1"], PC2 = centroid["PC2"])
+
+p_pc12_client <- ggplot(scores, aes(PC1, PC2)) +
+  geom_point(aes(color = out_client_meanplus), alpha = 0.7, size = 2) +
+  geom_point(data = centroid_12, aes(PC1, PC2), inherit.aes = FALSE, shape = 4, size = 5, stroke = 1.2) +
+  labs(
+    title = "PCA (PC1 vs PC2) with client-style outliers",
+    subtitle = sprintf("Outliers: Euclidean distance in PC1–PC%d > mean + 2*SD", n_pcs),
+    color = "Outlier"
+  ) +
+  theme_bw()
+
+p_pc12_robust <- ggplot(scores, aes(PC1, PC2)) +
+  geom_point(aes(color = out_robust_md), alpha = 0.7, size = 2) +
+  geom_point(data = centroid_12, aes(PC1, PC2), inherit.aes = FALSE, shape = 4, size = 5, stroke = 1.2) +
+  labs(
+    title = "PCA (PC1 vs PC2) with robust multivariate outliers",
+    subtitle = sprintf("Outliers: robust Mahalanobis distance in PC1–PC%d (MCD), cutoff Chi-square(DF=%d) at %.3f", n_pcs, n_pcs, alpha),
+    color = "Outlier"
+  ) +
+  theme_bw()
+
+p_pc12_client
+p_pc12_robust
+
+# -----------------------------
+# 4) Visualisation B: Distance-to-centroid distribution with thresholds
+# -----------------------------
+dist_long <- scores %>%
+  select(sample, dist_euclid) %>%
+  mutate(dummy = 1)
+
+p_dist <- ggplot(scores, aes(x = dist_euclid)) +
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = thr_client_literal, linewidth = 1, linetype = 2) +
+  geom_vline(xintercept = thr_client_meanplus, linewidth = 1, linetype = 1) +
+  labs(
+    title = "Euclidean distance to PCA centroid (PC1–PC10)",
+    subtitle = paste(
+      sprintf("Client literal: dist > 2*SD = %.3f (dashed)", thr_client_literal),
+      sprintf("2SD rule: dist > mean + 2*SD = %.3f (solid)", thr_client_meanplus),
+      sep = " | "
+    ),
+    x = sprintf("Euclidean distance in PC1–PC%d space", n_pcs),
+    y = "Count"
+  ) +
+  theme_bw()
+
+p_dist
+
+# -----------------------------
+# 5) Visualisation C: Robust Mahalanobis diagnostic plot (QQ-style)
+#    If points deviate strongly above the line, there are heavy-tail/outliers.
+# -----------------------------
+qq_df <- tibble(
+  md2_sorted = sort(scores$md2),
+  chi_sorted = qchisq(ppoints(nrow(scores)), df = n_pcs)
+)
+
+p_md_qq <- ggplot(qq_df, aes(x = chi_sorted, y = md2_sorted)) +
+  geom_point(alpha = 0.6, size = 1.8) +
+  geom_abline(intercept = 0, slope = 1, linewidth = 1) +
+  geom_hline(yintercept = thr_md2, linetype = 1, linewidth = 1) +
+  labs(
+    title = "Robust Mahalanobis distance diagnostic (PC1–PC10)",
+    subtitle = sprintf("Horizontal line = Chi-square cutoff at alpha=%.3f (%.3f)", alpha, thr_md2),
+    x = sprintf("Theoretical Chi-square quantiles (df=%d)", n_pcs),
+    y = "Observed robust MD^2 (sorted)"
+  ) +
+  theme_bw()
+
+p_md_qq
+
+# -----------------------------
+# 6) Produce outlier tables you can hand to the client
+# -----------------------------
+outlier_table <- scores %>%
+  transmute(
+    sample,
+    dist_euclid,
+    out_client_literal,
+    out_client_meanplus,
+    md2,
+    out_robust_md
+  ) %>%
+  arrange(desc(out_robust_md), desc(out_client_meanplus), desc(dist_euclid))
+
+# View top flagged
+head(outlier_table, 20)
+
+# Optionally write:
+# write.csv(outlier_table, file = file.path(outdir, "pca_outlier_calls.csv"), row.names = FALSE)
