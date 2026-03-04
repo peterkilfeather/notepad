@@ -585,22 +585,29 @@ p_md_qq <- ggplot(qq_df, aes(x = chi_sorted, y = md2_sorted)) +
 
 p_md_qq
 
-# -----------------------------
-# 6) Produce outlier tables you can hand to the client
-# -----------------------------
-outlier_table <- scores %>%
-  transmute(
-    sample,
-    dist_euclid,
-    out_client_literal,
-    out_client_meanplus,
-    md2,
-    out_robust_md
-  ) %>%
-  arrange(desc(out_robust_md), desc(out_client_meanplus), desc(dist_euclid))
 
-# View top flagged
-head(outlier_table, 20)
 
-# Optionally write:
-# write.csv(outlier_table, file = file.path(outdir, "pca_outlier_calls.csv"), row.names = FALSE)
+
+
+
+# distance in PC1–PC10
+scores$dist_pc10 <- sqrt(
+  rowSums((scores[,1:10] - 
+           matrix(centroid, nrow=nrow(scores), ncol=10, byrow=TRUE))^2)
+)
+
+# flag the Mahalanobis outliers you already calculated
+scores$outlier <- scores$md2 > qchisq(0.999, df=10)
+
+ggplot(scores, aes(dist_pc12, dist_pc10)) +
+
+  geom_point(aes(color=outlier), size=2, alpha=0.8) +
+
+  labs(
+    x="Distance from centroid (PC1–PC2)",
+    y="Distance from centroid (PC1–PC10)",
+    title="Comparison of PCA distances",
+    subtitle="Outliers are defined in the full 10-PC space"
+  ) +
+
+  theme_bw()
