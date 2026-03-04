@@ -611,3 +611,66 @@ ggplot(scores, aes(dist_pc12, dist_pc10)) +
   ) +
 
   theme_bw()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+df <- qc %>%
+  select(sample, z_connectivity, median_corr) %>%
+  left_join(scores %>% select(sample, md2), by = "sample")
+
+# thresholds (edit if you used different values)
+n_pcs <- 10
+alpha <- 0.999
+thr_md2 <- qchisq(alpha, df = n_pcs)
+thr_zk  <- -2
+
+# optional median-corr threshold (e.g. bottom 1%)
+thr_medcorr <- quantile(df$median_corr, 0.01, na.rm = TRUE)
+
+df <- df %>%
+  mutate(
+    flag_md2 = md2 > thr_md2,
+    flag_zk  = z_connectivity < thr_zk,
+    flag_cor = median_corr < thr_medcorr,
+    n_flags  = flag_md2 + flag_zk + flag_cor,
+    candidate_outlier = n_flags >= 2
+  )
+
+p_combo <- ggplot(df, aes(x = z_connectivity, y = md2)) +
+  geom_point(aes(color = candidate_outlier, size = 1 - median_corr), alpha = 0.75) +
+  geom_vline(xintercept = thr_zk, linewidth = 1) +
+  geom_hline(yintercept = thr_md2, linewidth = 1) +
+  labs(
+    title = "Combined sample QC: connectivity vs robust PCA outlier score",
+    subtitle = paste0(
+      "Horizontal line: robust MD² cutoff (Chi-square df=", n_pcs, ", alpha=", alpha, "). ",
+      "Vertical line: connectivity cutoff (Z.k=", thr_zk, "). ",
+      "Point size increases as median correlation decreases."
+    ),
+    x = "Sample connectivity (Z.k)  (lower = more dissimilar)",
+    y = "Robust Mahalanobis distance² (PC1–PC10)  (higher = more outlying)",
+    color = "Candidate outlier",
+    size = "1 - median corr"
+  ) +
+  theme_bw()
+
