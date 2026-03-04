@@ -357,3 +357,66 @@ message("  Candidate outliers (>= flags):  ", nrow(candidate_outliers))
 
 # Useful objects left in the environment:
 #   qc, candidate_outliers, logCPM, dge, cor_matrix, pca
+
+
+
+library(ggplot2)
+library(dplyr)
+
+# Extract PCA scores
+pca_df <- as.data.frame(pca$x[,1:2])
+pca_df$sample <- rownames(pca_df)
+
+# Compute centroid
+centroid <- colMeans(pca_df[,c("PC1","PC2")])
+
+# Distance from centroid
+pca_df$dist <- sqrt(
+  (pca_df$PC1 - centroid["PC1"])^2 +
+  (pca_df$PC2 - centroid["PC2"])^2
+)
+
+# Standard deviation of distances
+sd_dist <- sd(pca_df$dist)
+
+# Function to create circle coordinates
+circle_df <- function(radius, center, n=200){
+  tibble(
+    x = center["PC1"] + radius * cos(seq(0,2*pi,length.out=n)),
+    y = center["PC2"] + radius * sin(seq(0,2*pi,length.out=n)),
+    sd = radius/sd_dist
+  )
+}
+
+# Circles for 1,2,3 SD
+circles <- bind_rows(
+  circle_df(sd_dist, centroid),
+  circle_df(2*sd_dist, centroid),
+  circle_df(3*sd_dist, centroid)
+)
+
+# Plot
+ggplot(pca_df, aes(PC1, PC2)) +
+
+  geom_point(alpha=0.7, size=2) +
+
+  geom_path(
+    data=circles,
+    aes(x,y,group=sd,linetype=factor(sd)),
+    colour="red",
+    linewidth=1
+  ) +
+
+  geom_point(
+    aes(x=centroid["PC1"], y=centroid["PC2"]),
+    colour="blue",
+    size=4
+  ) +
+
+  labs(
+    title="PCA Sample Distribution",
+    subtitle="Contours represent 1, 2 and 3 SD from centroid",
+    linetype="SD from centroid"
+  ) +
+
+  theme_bw()
